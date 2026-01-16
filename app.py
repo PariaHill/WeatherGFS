@@ -16,40 +16,36 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="Captain Park's Marine Forecast", layout="wide")
 
 # ============================================================
-# LocalStorage 읽기 (JavaScript → URL 파라미터로 전달)
+# LocalStorage에서 복원 (URL 파라미터가 없을 때만)
 # ============================================================
-# 페이지 첫 로드 시 LocalStorage 값을 URL 파라미터로 전달하는 JS
-components.html("""
-<script>
-    // URL에 파라미터가 없을 때만 LocalStorage에서 복원
-    const urlParams = new URLSearchParams(window.location.search);
-    
-    if (!urlParams.has('lat') && !urlParams.has('lon')) {
+params = st.query_params
+
+# URL에 파라미터가 없으면 LocalStorage에서 복원 시도
+if 'lat' not in params or 'lon' not in params:
+    components.html("""
+    <script>
         const savedLat = localStorage.getItem('marine_lat');
         const savedLon = localStorage.getItem('marine_lon');
         const savedTz = localStorage.getItem('marine_tz');
         
         if (savedLat && savedLon) {
-            // LocalStorage 값이 있으면 URL 파라미터로 리다이렉트
-            const newUrl = new URL(window.location.href);
-            newUrl.searchParams.set('lat', savedLat);
-            newUrl.searchParams.set('lon', savedLon);
-            if (savedTz) newUrl.searchParams.set('tz', savedTz);
+            const currentUrl = window.parent.location.href;
+            const url = new URL(currentUrl);
             
-            // 현재 URL과 다를 때만 리다이렉트
-            if (window.location.href !== newUrl.href) {
-                window.location.href = newUrl.href;
+            // 이미 파라미터가 있으면 스킵
+            if (!url.searchParams.has('lat')) {
+                url.searchParams.set('lat', savedLat);
+                url.searchParams.set('lon', savedLon);
+                if (savedTz) url.searchParams.set('tz', savedTz);
+                window.parent.location.href = url.href;
             }
         }
-    }
-</script>
-""", height=0)
+    </script>
+    """, height=0)
 
 # ============================================================
 # URL 파라미터에서 위치 읽기
 # ============================================================
-params = st.query_params
-
 try:
     default_lat = float(params.get('lat', 31.8700))
 except:
