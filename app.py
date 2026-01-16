@@ -54,119 +54,107 @@ def get_arrow_html(deg, color="#007BFF"):
 
 def get_rtofs_current(lat, lon, target_time):
     """
-    NOAA RTOFS에서 해류 데이터 가져오기 (OpenDAP)
+    NOAA RTOFS에서 해류 데이터 가져오기 (CoastWatch ERDDAP)
     Returns: {'current_u': m/s, 'current_v': m/s, 'current_speed': m/s, 'current_dir': deg}
     """
     result = {}
     
     try:
-        # RTOFS는 경도를 0~360 범위로 사용
-        lon_360 = lon if lon >= 0 else lon + 360
+        # ERDDAP griddap 사용 (CoastWatch)
+        # Dataset: ncepRtofsG2DFore3hrlyProg_LonPM180 (경도 -180~180 버전)
+        base_url = "https://coastwatch.pfeg.noaa.gov/erddap/griddap/ncepRtofsG2DFore3hrlyProg_LonPM180.json"
         
+        # 위경도 범위 (ERDDAP은 범위로 요청)
+        lat_min, lat_max = lat - 0.05, lat + 0.05
+        lon_min, lon_max = lon - 0.05, lon + 0.05
+        
+        # 최신 시간 데이터 요청 (last)
+        # u_velocity와 v_velocity 동시 요청
+        query = f"?u_velocity[(last)][(0.0)][({lat_min}):1:({lat_max})][({lon_min}):1:({lon_max})],v_velocity[(last)][(0.0)][({lat_min}):1:({lat_max})][({lon_min}):1:({lon_max})]"
+        
+        url = base_url + query
+        resp = requests.get(url, timeout=20)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            
+            # ERDDAP JSON 구조에서 값 추출
+            if 'table' in data:
+                rows = data['table'].get('rows', [])
+                if rows:
+                    # 첫 번째 유효한 값 찾기
+                    for row in rows:
+                        # row: [time, depth, lat, lon, u_velocity, v_velocity]
+                        if len(row) >= 6:
+                            u_val = row[4]
+                            v_val = row[5]
+                            
+                            if u_val is not None and v_val is not None:
+                                # NaN 체크
+                                if isinstance(u_val, (int, float)) and isinstance(v_val, (int, float)):
+                                    if abs(u_val) < 10 and abs(v_val) < 10:
+                                        result['current_u'] = u_val
+                                        result['current_v'] = v_val
+                                        result['current_speed'] = math.sqrt(u_val**2 + v_val**2)
+                                        result['current_dir'] = (math.degrees(math.atan2(u_val, v_val)) + 360) % 360
+                                        return result
+        
+        # ERDDAP 실패 시 NOMADS OpenDAP 백업 시도
+        lon_360 = lon if lon >= 0 else lon + 360
         now_utc = datetime.now(timezone.utc)
         
-        # 여러 날짜와 forecast hour 조합 시도
-        for days_ago in range(1, 4):
+        for days_ago in range(1, 3):
             rtofs_date = (now_utc - timedelta(days=days_ago)).strftime('%Y%m%d')
             
-            # 다양한 forecast hour 시도
-            for forecast_hour in [24, 48, 72, 0]:
-                # OpenDAP URL (2D 표층 해류)
-                # 형식: rtofs_glo_2ds_fHHH_daily_diag
+            for forecast_hour in [24, 48]:
                 base_url = f"https://nomads.ncep.noaa.gov/dods/rtofs/rtofs_global{rtofs_date}/rtofs_glo_2ds_f{forecast_hour:03d}_daily_diag"
                 
-                # 위경도 인덱스 계산 (RTOFS 해상도: 약 1/12도)
-                # RTOFS 위도: -80 ~ 90 (2041 points)
-                # RTOFS 경도: 0 ~ 360 (4320 points)
                 lat_idx = int(round((lat + 80) * 12))
                 lon_idx = int(round(lon_360 * 12))
-                
-                # 범위 제한
                 lat_idx = max(0, min(lat_idx, 2040))
                 lon_idx = max(0, min(lon_idx, 4319))
                 
                 u_val = None
                 v_val = None
                 
-                # U 성분 (동서 방향 해류)
+                # U 성분
                 u_url = f"{base_url}.ascii?u_velocity[0][{lat_idx}][{lon_idx}]"
                 try:
-                    resp_u = requests.get(u_url, timeout=15)
-                    if resp_u.status_code == 200 and 'u_velocity' in resp_u.text:
-                        lines = resp_u.text.strip().split('\n')
-                        for line in lines:
-                            # 데이터 라인 찾기 (숫자로 시작하거나 [0] 형식)
-                            line = line.strip()
-                            if not line or line.startswith('u_velocity') or line.startswith('Dataset'):
-                                continue
-                            # [0], value 형식 또는 단순 숫자
-                            if ',' in line:
-                                parts = line.split(',')
-                                for part in reversed(parts):
-                                    try:
-                                        val = float(part.strip())
-                                        if abs(val) < 50:  # 현실적 범위
-                                            u_val = val
-                                            break
-                                    except:
-                                        continue
-                            else:
+                    resp_u = requests.get(u_url, timeout=10)
+                    if resp_u.status_code == 200:
+                        for line in resp_u.text.split('\n'):
+                            if ',' in line and not line.startswith('u_velocity'):
                                 try:
-                                    val = float(line)
-                                    if abs(val) < 50:
+                                    val = float(line.split(',')[-1].strip())
+                                    if abs(val) < 10:
                                         u_val = val
+                                        break
                                 except:
                                     pass
-                            if u_val is not None:
-                                break
-                except Exception:
-                    continue
+                except:
+                    pass
                 
-                if u_val is None:
-                    continue
-                
-                # V 성분 (남북 방향 해류)
+                # V 성분
                 v_url = f"{base_url}.ascii?v_velocity[0][{lat_idx}][{lon_idx}]"
                 try:
-                    resp_v = requests.get(v_url, timeout=15)
-                    if resp_v.status_code == 200 and 'v_velocity' in resp_v.text:
-                        lines = resp_v.text.strip().split('\n')
-                        for line in lines:
-                            line = line.strip()
-                            if not line or line.startswith('v_velocity') or line.startswith('Dataset'):
-                                continue
-                            if ',' in line:
-                                parts = line.split(',')
-                                for part in reversed(parts):
-                                    try:
-                                        val = float(part.strip())
-                                        if abs(val) < 50:
-                                            v_val = val
-                                            break
-                                    except:
-                                        continue
-                            else:
+                    resp_v = requests.get(v_url, timeout=10)
+                    if resp_v.status_code == 200:
+                        for line in resp_v.text.split('\n'):
+                            if ',' in line and not line.startswith('v_velocity'):
                                 try:
-                                    val = float(line)
-                                    if abs(val) < 50:
+                                    val = float(line.split(',')[-1].strip())
+                                    if abs(val) < 10:
                                         v_val = val
+                                        break
                                 except:
                                     pass
-                            if v_val is not None:
-                                break
-                except Exception:
-                    continue
+                except:
+                    pass
                 
-                # 성공하면 계산
                 if u_val is not None and v_val is not None:
-                    # NaN이나 fill value 체크 (보통 매우 큰 값)
-                    if abs(u_val) > 10 or abs(v_val) > 10:
-                        continue
-                        
                     result['current_u'] = u_val
                     result['current_v'] = v_val
                     result['current_speed'] = math.sqrt(u_val**2 + v_val**2)
-                    # 해류가 흐르는 방향 (toward)
                     result['current_dir'] = (math.degrees(math.atan2(u_val, v_val)) + 360) % 360
                     return result
                     
