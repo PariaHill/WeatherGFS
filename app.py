@@ -55,9 +55,9 @@ def get_arrow_html(deg, color="#007BFF"):
 def get_rtofs_current(lat, lon, target_time):
     """
     NOAA RTOFS에서 해류 데이터 가져오기 (CoastWatch ERDDAP)
-    Returns: {'current_u': m/s, 'current_v': m/s, 'current_speed': m/s, 'current_dir': deg}
+    Returns: {'current_u': m/s, 'current_v': m/s, 'current_speed': m/s, 'current_dir': deg, 'debug': str}
     """
-    result = {}
+    result = {'debug': ''}
     
     try:
         # ERDDAP griddap 사용 (CoastWatch)
@@ -74,6 +74,7 @@ def get_rtofs_current(lat, lon, target_time):
         
         url = base_url + query
         resp = requests.get(url, timeout=20)
+        result['debug'] += f"ERDDAP: {resp.status_code}, "
         
         if resp.status_code == 200:
             data = resp.json()
@@ -81,6 +82,7 @@ def get_rtofs_current(lat, lon, target_time):
             # ERDDAP JSON 구조에서 값 추출
             if 'table' in data:
                 rows = data['table'].get('rows', [])
+                result['debug'] += f"rows: {len(rows)}, "
                 if rows:
                     # 첫 번째 유효한 값 찾기
                     for row in rows:
@@ -97,9 +99,13 @@ def get_rtofs_current(lat, lon, target_time):
                                         result['current_v'] = v_val
                                         result['current_speed'] = math.sqrt(u_val**2 + v_val**2)
                                         result['current_dir'] = (math.degrees(math.atan2(u_val, v_val)) + 360) % 360
+                                        result['debug'] += f"u={u_val:.3f}, v={v_val:.3f}"
                                         return result
-        
-        # ERDDAP 실패 시 NOMADS OpenDAP 백업 시도
+    except Exception as e:
+        result['debug'] += f"ERDDAP err: {str(e)[:50]}, "
+    
+    # ERDDAP 실패 시 NOMADS OpenDAP 백업 시도
+    try:
         lon_360 = lon if lon >= 0 else lon + 360
         now_utc = datetime.now(timezone.utc)
         
@@ -121,6 +127,7 @@ def get_rtofs_current(lat, lon, target_time):
                 u_url = f"{base_url}.ascii?u_velocity[0][{lat_idx}][{lon_idx}]"
                 try:
                     resp_u = requests.get(u_url, timeout=10)
+                    result['debug'] += f"NOMADS({rtofs_date}/f{forecast_hour}): {resp_u.status_code}, "
                     if resp_u.status_code == 200:
                         for line in resp_u.text.split('\n'):
                             if ',' in line and not line.startswith('u_velocity'):
@@ -131,8 +138,8 @@ def get_rtofs_current(lat, lon, target_time):
                                         break
                                 except:
                                     pass
-                except:
-                    pass
+                except Exception as e:
+                    result['debug'] += f"u_err: {str(e)[:30]}, "
                 
                 # V 성분
                 v_url = f"{base_url}.ascii?v_velocity[0][{lat_idx}][{lon_idx}]"
@@ -156,10 +163,11 @@ def get_rtofs_current(lat, lon, target_time):
                     result['current_v'] = v_val
                     result['current_speed'] = math.sqrt(u_val**2 + v_val**2)
                     result['current_dir'] = (math.degrees(math.atan2(u_val, v_val)) + 360) % 360
+                    result['debug'] += f"u={u_val:.3f}, v={v_val:.3f}"
                     return result
                     
-    except Exception:
-        pass
+    except Exception as e:
+        result['debug'] += f"NOMADS err: {str(e)[:50]}"
     
     return result
 
@@ -497,6 +505,10 @@ if fetch_btn or 'data_loaded' in st.session_state:
                 df['Current(kts)'] = np.nan
                 df['Current_Deg'] = np.nan
                 df['Current Direction'] = '-'
+            
+            # 해류 디버그 정보 표시
+            if current_data and 'debug' in current_data:
+                st.caption(f"🔍 RTOFS Debug: {current_data['debug']}")
             
             tab1, tab2 = st.tabs(["📊 데이터 테이블", "📈 시각화 그래프"])
             
