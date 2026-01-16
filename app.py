@@ -10,40 +10,33 @@ from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import extra_streamlit_components as stx
 
 # 페이지 설정
 st.set_page_config(page_title="Captain Park's Marine Forecast", layout="wide")
 
 # ============================================================
-# 쿠키 매니저 설정
+# URL 파라미터에서 위치 복원
 # ============================================================
-cookie_manager = stx.CookieManager()
+params = st.query_params
 
-# 쿠키에서 저장된 값 읽기 (없으면 기본값)
-def get_cookie_float(key, default):
-    try:
-        val = cookie_manager.get(key)
-        return float(val) if val is not None else default
-    except:
-        return default
-
-def get_cookie_int(key, default):
-    try:
-        val = cookie_manager.get(key)
-        return int(val) if val is not None else default
-    except:
-        return default
-
-# 저장된 위치 불러오기
-saved_lat = get_cookie_float('marine_lat', 31.8700)
-saved_lon = get_cookie_float('marine_lon', 126.7700)
-saved_offset = get_cookie_int('marine_tz', 9)
+# URL에서 값 읽기 (없으면 기본값)
+try:
+    default_lat = float(params.get('lat', 31.8700))
+except:
+    default_lat = 31.8700
+try:
+    default_lon = float(params.get('lon', 126.7700))
+except:
+    default_lon = 126.7700
+try:
+    default_offset = int(params.get('tz', 9))
+except:
+    default_offset = 9
 
 # 세션 상태 초기화
-if 'lat' not in st.session_state: st.session_state.lat = saved_lat
-if 'lon' not in st.session_state: st.session_state.lon = saved_lon
-if 'offset' not in st.session_state: st.session_state.offset = saved_offset
+if 'lat' not in st.session_state: st.session_state.lat = default_lat
+if 'lon' not in st.session_state: st.session_state.lon = default_lon
+if 'offset' not in st.session_state: st.session_state.offset = default_offset
 
 MS_TO_KNOTS = 1.94384
 
@@ -286,11 +279,11 @@ with st.container():
 # ============================================================
 if fetch_btn or 'data_loaded' in st.session_state:
     
-    # 데이터 수신 시 현재 위치를 쿠키에 저장 (30일 유효)
+    # 데이터 수신 시 현재 위치를 URL 파라미터에 저장
     if fetch_btn:
-        cookie_manager.set('marine_lat', str(st.session_state.lat), expires_at=datetime.now() + timedelta(days=30))
-        cookie_manager.set('marine_lon', str(st.session_state.lon), expires_at=datetime.now() + timedelta(days=30))
-        cookie_manager.set('marine_tz', str(st.session_state.offset), expires_at=datetime.now() + timedelta(days=30))
+        st.query_params['lat'] = str(st.session_state.lat)
+        st.query_params['lon'] = str(st.session_state.lon)
+        st.query_params['tz'] = str(st.session_state.offset)
     
     with st.spinner("최신 GFS Cycle 탐지 중..."):
         date_str, cycle, cycle_time = get_available_cycle()
