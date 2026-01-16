@@ -10,16 +10,46 @@ from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import streamlit.components.v1 as components
 
 # 페이지 설정
 st.set_page_config(page_title="Captain Park's Marine Forecast", layout="wide")
 
 # ============================================================
-# URL 파라미터에서 위치 복원
+# LocalStorage 읽기 (JavaScript → URL 파라미터로 전달)
+# ============================================================
+# 페이지 첫 로드 시 LocalStorage 값을 URL 파라미터로 전달하는 JS
+components.html("""
+<script>
+    // URL에 파라미터가 없을 때만 LocalStorage에서 복원
+    const urlParams = new URLSearchParams(window.location.search);
+    
+    if (!urlParams.has('lat') && !urlParams.has('lon')) {
+        const savedLat = localStorage.getItem('marine_lat');
+        const savedLon = localStorage.getItem('marine_lon');
+        const savedTz = localStorage.getItem('marine_tz');
+        
+        if (savedLat && savedLon) {
+            // LocalStorage 값이 있으면 URL 파라미터로 리다이렉트
+            const newUrl = new URL(window.location.href);
+            newUrl.searchParams.set('lat', savedLat);
+            newUrl.searchParams.set('lon', savedLon);
+            if (savedTz) newUrl.searchParams.set('tz', savedTz);
+            
+            // 현재 URL과 다를 때만 리다이렉트
+            if (window.location.href !== newUrl.href) {
+                window.location.href = newUrl.href;
+            }
+        }
+    }
+</script>
+""", height=0)
+
+# ============================================================
+# URL 파라미터에서 위치 읽기
 # ============================================================
 params = st.query_params
 
-# URL에서 값 읽기 (없으면 기본값)
 try:
     default_lat = float(params.get('lat', 31.8700))
 except:
@@ -279,11 +309,21 @@ with st.container():
 # ============================================================
 if fetch_btn or 'data_loaded' in st.session_state:
     
-    # 데이터 수신 시 현재 위치를 URL 파라미터에 저장
+    # 데이터 수신 시 LocalStorage와 URL 파라미터 둘 다 저장
     if fetch_btn:
+        # URL 파라미터 업데이트
         st.query_params['lat'] = str(st.session_state.lat)
         st.query_params['lon'] = str(st.session_state.lon)
         st.query_params['tz'] = str(st.session_state.offset)
+        
+        # LocalStorage 저장 (JavaScript)
+        components.html(f"""
+        <script>
+            localStorage.setItem('marine_lat', '{st.session_state.lat}');
+            localStorage.setItem('marine_lon', '{st.session_state.lon}');
+            localStorage.setItem('marine_tz', '{st.session_state.offset}');
+        </script>
+        """, height=0)
     
     with st.spinner("최신 GFS Cycle 탐지 중..."):
         date_str, cycle, cycle_time = get_available_cycle()
