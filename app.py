@@ -52,6 +52,96 @@ def get_arrow_html(deg, color="#007BFF"):
     rotate_deg = (deg + 180) % 360 
     return f'<span style="display:inline-block; transform:rotate({rotate_deg}deg); font-size:16px; color:{color}; margin-left:5px;">↑</span>'
 
+def get_rtofs_current(lat, lon, target_time):
+    """
+    NOAA RTOFS에서 해류 데이터 가져오기 (OpenDAP)
+    Returns: {'current_u': m/s, 'current_v': m/s, 'current_speed': m/s, 'current_dir': deg}
+    """
+    result = {}
+    
+    try:
+        # RTOFS는 경도를 0~360 범위로 사용
+        lon_360 = lon if lon >= 0 else lon + 360
+        
+        # 최근 RTOFS 날짜 (1-2일 전 데이터가 안정적)
+        now_utc = datetime.now(timezone.utc)
+        
+        # 여러 날짜 시도 (최신부터)
+        for days_ago in range(1, 4):
+            rtofs_date = (now_utc - timedelta(days=days_ago)).strftime('%Y%m%d')
+            
+            # forecast hour 계산 (3시간 단위, 최대 72시간)
+            if target_time.tzinfo is None:
+                target_time = target_time.replace(tzinfo=timezone.utc)
+            
+            rtofs_base = (now_utc - timedelta(days=days_ago)).replace(hour=0, minute=0, second=0, microsecond=0)
+            hours_diff = (target_time - rtofs_base).total_seconds() / 3600
+            forecast_hour = min(max(int(hours_diff / 3) * 3, 0), 72)
+            
+            # OpenDAP URL (2D 표층 해류)
+            base_url = f"https://nomads.ncep.noaa.gov/dods/rtofs/rtofs_global{rtofs_date}/rtofs_glo_2ds_f{forecast_hour:03d}_daily_diag"
+            
+            # 위경도 인덱스 계산 (RTOFS 해상도: 1/12도 ≈ 0.083도)
+            lat_idx = int((lat + 80) / 0.083)
+            lon_idx = int(lon_360 / 0.083)
+            
+            # 범위 제한
+            lat_idx = max(0, min(lat_idx, 2040))
+            lon_idx = max(0, min(lon_idx, 4319))
+            
+            u_val = None
+            v_val = None
+            
+            # U 성분 (동서 방향 해류)
+            u_url = f"{base_url}.ascii?u_velocity[0][{lat_idx}][{lon_idx}]"
+            try:
+                resp_u = requests.get(u_url, timeout=10)
+                if resp_u.status_code == 200:
+                    for line in resp_u.text.strip().split('\n'):
+                        if line.startswith('u_velocity') or line.startswith('['):
+                            continue
+                        try:
+                            val = float(line.split(',')[-1].strip() if ',' in line else line.strip())
+                            if abs(val) < 10:  # 현실적 범위
+                                u_val = val
+                                break
+                        except:
+                            pass
+            except:
+                pass
+            
+            # V 성분 (남북 방향 해류)
+            v_url = f"{base_url}.ascii?v_velocity[0][{lat_idx}][{lon_idx}]"
+            try:
+                resp_v = requests.get(v_url, timeout=10)
+                if resp_v.status_code == 200:
+                    for line in resp_v.text.strip().split('\n'):
+                        if line.startswith('v_velocity') or line.startswith('['):
+                            continue
+                        try:
+                            val = float(line.split(',')[-1].strip() if ',' in line else line.strip())
+                            if abs(val) < 10:
+                                v_val = val
+                                break
+                        except:
+                            pass
+            except:
+                pass
+            
+            # 성공하면 계산
+            if u_val is not None and v_val is not None:
+                result['current_u'] = u_val
+                result['current_v'] = v_val
+                result['current_speed'] = math.sqrt(u_val**2 + v_val**2)
+                # 해류가 흐르는 방향 (toward)
+                result['current_dir'] = (math.degrees(math.atan2(u_val, v_val)) + 360) % 360
+                break
+                
+    except:
+        pass
+    
+    return result
+
 def get_available_cycle():
     now_utc = datetime.now(timezone.utc)
     cycles = [18, 12, 6, 0]
@@ -225,6 +315,11 @@ def fetch_single_forecast(args):
     wave_data = fetch_gfswave(date_str, cycle, fhour, lat, lon)
     wave_parsed = parse_grib_data(wave_data, lat, lon)
     
+    # RTOFS 해류 데이터 (첫 번째 시간대만 가져오기 - 해류는 천천히 변함)
+    if fhour == 0:
+        current_data = get_rtofs_current(lat, lon, valid_time)
+        row.update(current_data)
+    
     row.update(atmos_parsed)
     row.update(wave_parsed)
     
@@ -367,10 +462,30 @@ if fetch_btn or 'data_loaded' in st.session_state:
             
             df['Swell Period(s)'] = df['swell_period'].round(1) if 'swell_period' in df.columns else np.nan
             
+            # 해류 데이터 처리 (첫 번째 행의 값을 모든 행에 적용 - 해류는 천천히 변함)
+            if 'current_speed' in df.columns:
+                current_speed = df['current_speed'].iloc[0] if pd.notna(df['current_speed'].iloc[0]) else np.nan
+                current_dir = df['current_dir'].iloc[0] if pd.notna(df['current_dir'].iloc[0]) else np.nan
+                df['Current(kts)'] = round(current_speed * MS_TO_KNOTS, 2) if pd.notna(current_speed) else np.nan
+                df['Current_Deg'] = current_dir
+                
+                if pd.notna(current_dir):
+                    df['Current Direction'] = f"{current_dir:.1f}° {get_direction_text(current_dir)} {get_arrow_html(current_dir, '#FF6600')}"
+                else:
+                    df['Current Direction'] = '-'
+            else:
+                df['Current(kts)'] = np.nan
+                df['Current_Deg'] = np.nan
+                df['Current Direction'] = '-'
+            
             tab1, tab2 = st.tabs(["📊 데이터 테이블", "📈 시각화 그래프"])
             
             with tab1:
                 st.subheader("데이터 테이블")
+                
+                # 해류 정보 표시 (테이블 상단에)
+                if pd.notna(df['Current(kts)'].iloc[0]):
+                    st.caption(f"🌊 해류 (RTOFS): {df['Current Direction'].iloc[0]} | {df['Current(kts)'].iloc[0]} kts")
                 
                 display_cols = [time_col, "Pressure(hPa)", "Wind Direction", "Wind Speed(kts)", "Gust(kts)", 
                                "Wave Direction", "Waves(m)", "Max Waves(m)", "Wave Period(s)",
