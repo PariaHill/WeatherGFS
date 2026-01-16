@@ -6,3 +6,4 @@ plotly
 xarray
 cfgrib
 eccodes
+extra-streamlit-components
